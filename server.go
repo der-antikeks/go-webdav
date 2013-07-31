@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"bytes"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -329,7 +330,43 @@ func (s *Server) doPost(w http.ResponseWriter, r *http.Request) {
 	s.doGet(w, r)
 }
 
+type emptyContent struct{}
+
+func (e emptyContent) Read(p []byte) (n int, err error) {
+	return 0, io.EOF
+}
+
+func (e emptyContent) Seek(offset int64, whence int) (ret int64, err error) {
+	return 0, nil
+}
+
 func (s *Server) serveResource(w http.ResponseWriter, r *http.Request, serveContent bool) {
+	path := s.url2path(r.URL)
+	log.Println("DAV:", "serving resource", path)
+
+	f, err := s.Fs.Open(path)
+	if err != nil {
+		http.Error(w, r.RequestURI, StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	// TODO: what if path is collection?
+
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, r.RequestURI, StatusNotFound)
+	}
+	modTime := fi.ModTime()
+
+	if serveContent {
+
+		http.ServeContent(w, r, path, modTime, emptyContent{})
+	}
+
+	http.ServeContent(w, r, path, modTime, f)
+	return
+
 	// TODO: get/head
 	// path := url2path(r.URL)
 	w.WriteHeader(StatusNotImplemented)
