@@ -16,9 +16,15 @@ var (
 func main() {
 	os.Mkdir(path, os.ModeDir)
 
+	// http.StripPrefix is not working, webdav.Server has no knowledge
+	// of stripped component, but needs for COPY/MOVE methods.
+	// Destination path is supplied as header and needs to be stripped.
+	http.Handle("/webdav/", &webdav.Server{
+		TrimPrefix: "/webdav/",
+		Fs:         webdav.Dir(path),
+	})
+
 	http.HandleFunc("/", index)
-	http.Handle("/webdav/", http.StripPrefix("/webdav/",
-		webdav.Handler(webdav.Dir(path))))
 
 	log.Println("Listening on http://127.0.0.1:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))

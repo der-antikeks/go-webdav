@@ -17,7 +17,7 @@ __TODO (litmus tests):__
 	* mkcol_with_body....... pass
 * copymove.. FAIL
 	* copy_init............. pass
-	* copy_simple........... FAIL
+	* copy_simple........... pass
 	* copy_overwrite........ FAIL
 	* copy_nodestcoll....... WARNING
 	* copy_cleanup.......... pass

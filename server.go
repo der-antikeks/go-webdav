@@ -14,6 +14,9 @@ func Handler(root FileSystem) http.Handler {
 }
 
 type Server struct {
+	// trimmed path prefix
+	TrimPrefix string
+
 	// files are readonly?
 	ReadOnly bool
 
@@ -87,12 +90,17 @@ func (s *Server) url2path(u *url.URL) string {
 	if u.Path == "" {
 		return "/"
 	}
-	return strings.Trim(u.Path, "/")
+
+	if p := strings.TrimPrefix(u.Path, s.TrimPrefix); len(p) < len(u.Path) {
+		return strings.Trim(p, "/")
+	}
+
+	return "/"
 }
 
 // convert path to url
 func (s *Server) path2url(p string) *url.URL {
-	return &url.URL{Path: "/" + p}
+	return &url.URL{Path: "/" + s.TrimPrefix + "/" + p}
 }
 
 // does path exists?
@@ -521,14 +529,157 @@ func (s *Server) doMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.copyResource(w, r) {
+		// TODO: duplicate http-header sent?
 		s.deleteResource(s.url2path(r.URL), w, r, false)
 	}
 }
 
 func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
+	dest := r.Header.Get("Destination")
+	if dest == "" {
+		w.WriteHeader(StatusBadRequest)
+		return false
+	}
+
+	d, err := url.Parse(dest)
+	if err != nil {
+		w.WriteHeader(StatusBadRequest)
+		return false
+	}
+	// TODO: normalize dest?
+	dest = s.url2path(d)
+	source := s.url2path(r.URL)
+	log.Println("DAV:", "copy", dest, source)
+
+	// source equals destination
+	if source == dest {
+		w.WriteHeader(StatusForbidden)
+		return false
+	}
+
+	// quick'n'dirty destination must be same server/namespace as source
+	if d.Host != r.Host ||
+		!strings.HasPrefix(d.Path, s.TrimPrefix) ||
+		!strings.HasPrefix(r.URL.Path, s.TrimPrefix) {
+
+		w.WriteHeader(StatusBadGateway)
+		return false
+	}
+
+	overwrite := r.Header.Get("Overwrite") != "F"
+	exists := s.pathExists(dest)
+
+	log.Println("DAV:", "overwrite", r.Header.Get("Overwrite"), overwrite)
+
+	if overwrite {
+		if exists {
+			if !s.deleteResource(dest, w, r, true) {
+				// TODO: http status code?
+
+				log.Println("DAV:", "overwrite existing", "failed")
+				return false
+			}
+			log.Println("DAV:", "overwrite existing", "success")
+		}
+	} else {
+		if exists {
+			w.WriteHeader(StatusPreconditionFailed)
+			return false
+		}
+	}
+
 	// TODO: copy resource
-	w.WriteHeader(StatusNotImplemented)
-	return false
+	if !s.pathIsDirectory(source) || r.Header.Get("Depth") == "0" {
+		if err := s.CopyFile(source, dest); err != nil {
+			w.WriteHeader(StatusInternalServerError)
+			return false
+		}
+	} else {
+		// http://www.webdav.org/specs/rfc4918.html#copy.for.collections
+		errors := map[string]int{}
+		s.copyCollection(source, dest, w, r, errors)
+
+		if err := s.CopyFile(source, dest); err != nil {
+			errors[source] = StatusInternalServerError
+		}
+
+		if len(errors) != 0 {
+			// send multistatus
+			abs := r.RequestURI
+
+			buf := new(bytes.Buffer)
+			buf.WriteString(`<?xml version="1.0" encoding="utf-8"?>`)
+			buf.WriteString(`<multistatus xmlns='DAV:'>`)
+
+			for p, e := range errors {
+				buf.WriteString(`<response>`)
+				buf.WriteString(`<href>` + abs + p + `</href>`)
+				buf.WriteString(`<status>HTTP/1.1 ` + string(e) + ` ` + StatusText(e) + `</status>`)
+				buf.WriteString(`</response>`)
+			}
+
+			buf.WriteString(`</multistatus>`)
+
+			w.WriteHeader(StatusMulti)
+			w.Header().Set("Content-Length", string(buf.Len()))
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			buf.WriteTo(w)
+
+			return false
+		}
+	}
+
+	// copy was successful
+	if exists {
+		w.WriteHeader(StatusNoContent)
+
+	} else {
+		w.WriteHeader(StatusCreated)
+	}
+
+	s.unlockResource(dest)
+	return true
+}
+
+func (s *Server) CopyFile(source, dest string) error {
+	fs, err := s.Fs.Open(source)
+	if err != nil {
+		return err
+	}
+
+	fd, err := s.Fs.Create(dest)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(fd, fs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Server) copyCollection(source, dest string, w http.ResponseWriter, r *http.Request, errors map[string]int) {
+	ifHeader := r.Header.Get("If")
+	lockToken := r.Header.Get("Lock-Token")
+
+	for _, sub := range s.directoryContents(source) {
+		ssub := source + "/" + sub
+		dsub := dest + "/" + sub
+
+		if s.isLocked(ssub, ifHeader+lockToken) {
+			errors[ssub] = StatusLocked
+		} else {
+			if s.pathIsDirectory(ssub) {
+				s.copyCollection(ssub, dsub, w, r, errors)
+			}
+
+			if err := s.CopyFile(ssub, dsub); err != nil {
+				errors[ssub] = StatusInternalServerError
+			}
+		}
+	}
+
 }
 
 func (s *Server) doLock(w http.ResponseWriter, r *http.Request) {
