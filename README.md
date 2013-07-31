@@ -1,13 +1,13 @@
 # webdav
 
 __TODO (litmus tests):__
-* basic..... FAIL
+* basic..... pass
 	* options............... pass
-	* put_get............... FAIL
-	* put_get_utf8_segment.. FAIL
+	* put_get............... pass
+	* put_get_utf8_segment.. pass
 	* put_no_parent......... pass
-	* mkcol_over_plain...... SKIPPED
-	* delete................ SKIPPED
+	* mkcol_over_plain...... pass
+	* delete................ pass
 	* delete_null........... pass
 	* delete_fragment....... pass
 	* mkcol................. pass
@@ -15,7 +15,17 @@ __TODO (litmus tests):__
 	* delete_coll........... pass
 	* mkcol_no_parent....... pass
 	* mkcol_with_body....... pass
-* copymove.. SKIPPED
+* copymove.. FAIL
+	* copy_init............. pass
+	* copy_simple........... FAIL
+	* copy_overwrite........ FAIL
+	* copy_nodestcoll....... WARNING
+	* copy_cleanup.......... pass
+	* copy_coll............. FAIL
+	* copy_shallow.......... FAIL
+	* move.................. FAIL
+	* move_coll............. FAIL
+	* move_cleanup.......... pass
 * props..... SKIPPED
 * locks..... SKIPPED
 * http...... SKIPPED

@@ -1,6 +1,7 @@
 package webdav
 
 import (
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -98,4 +99,15 @@ func (d Dir) Remove(name string) error {
 	}
 
 	return os.Remove(p)
+}
+
+// mockup zero content file aka only header
+type emptyFile struct{}
+
+func (e emptyFile) Read(p []byte) (n int, err error) {
+	return 0, io.EOF
+}
+
+func (e emptyFile) Seek(offset int64, whence int) (ret int64, err error) {
+	return 0, nil
 }

@@ -330,19 +330,8 @@ func (s *Server) doPost(w http.ResponseWriter, r *http.Request) {
 	s.doGet(w, r)
 }
 
-type emptyContent struct{}
-
-func (e emptyContent) Read(p []byte) (n int, err error) {
-	return 0, io.EOF
-}
-
-func (e emptyContent) Seek(offset int64, whence int) (ret int64, err error) {
-	return 0, nil
-}
-
 func (s *Server) serveResource(w http.ResponseWriter, r *http.Request, serveContent bool) {
 	path := s.url2path(r.URL)
-	log.Println("DAV:", "serving resource", path)
 
 	f, err := s.Fs.Open(path)
 	if err != nil {
@@ -360,16 +349,11 @@ func (s *Server) serveResource(w http.ResponseWriter, r *http.Request, serveCont
 	modTime := fi.ModTime()
 
 	if serveContent {
-
-		http.ServeContent(w, r, path, modTime, emptyContent{})
+		http.ServeContent(w, r, path, modTime, f)
+	} else {
+		// TODO: better way to send only head
+		http.ServeContent(w, r, path, modTime, emptyFile{})
 	}
-
-	http.ServeContent(w, r, path, modTime, f)
-	return
-
-	// TODO: get/head
-	// path := url2path(r.URL)
-	w.WriteHeader(StatusNotImplemented)
 }
 
 // http://www.webdav.org/specs/rfc4918.html#METHOD_DELETE
@@ -388,7 +372,10 @@ func (s *Server) doDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteResource(path string, w http.ResponseWriter, r *http.Request, setStatus bool) bool {
-	if s.isLockedRequest(r) {
+	ifHeader := r.Header.Get("If")
+	lockToken := r.Header.Get("Lock-Token")
+
+	if s.isLocked(path, ifHeader+lockToken) {
 		w.WriteHeader(StatusLocked)
 		return false
 	}
@@ -449,6 +436,8 @@ func (s *Server) deleteCollection(path string, w http.ResponseWriter, r *http.Re
 	lockToken := r.Header.Get("Lock-Token")
 
 	for _, p := range s.directoryContents(path) {
+		p = path + "/" + p
+
 		if s.isLocked(p, ifHeader+lockToken) {
 			errors[p] = StatusLocked
 		} else {
@@ -476,10 +465,37 @@ func (s *Server) doPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: put
-	// path := url2path(r.URL)
-	// exists := pathExists(path)
-	w.WriteHeader(StatusNotImplemented)
+	path := s.url2path(r.URL)
+
+	if s.pathIsDirectory(path) {
+		// use MKCOL instead
+		w.WriteHeader(StatusMethodNotAllowed)
+		return
+	}
+
+	exists := s.pathExists(path)
+
+	// TODO: content range / partial put
+
+	// truncate file if exists
+	file, err := s.Fs.Create(path)
+	if err != nil {
+		w.WriteHeader(StatusConflict)
+		return
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, r.Body); err != nil {
+		w.WriteHeader(StatusConflict)
+	} else {
+		if exists {
+			w.WriteHeader(StatusNoContent)
+		} else {
+			w.WriteHeader(StatusCreated)
+		}
+	}
+
+	s.unlockResource(path)
 }
 
 // http://www.webdav.org/specs/rfc4918.html#METHOD_COPY
