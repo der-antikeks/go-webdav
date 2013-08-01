@@ -29,6 +29,11 @@ func NodeFromXml(r io.Reader) (*Node, error) {
 		case xml.StartElement:
 			parent = cur
 
+			// if tok.Name.Space != "DAV:" {
+			if tok.Name.Space == "" {
+				return nil, ErrMalformedXml
+			}
+
 			cur = &Node{
 				Name:   tok.Name,
 				Attr:   tok.Attr,
@@ -88,4 +93,16 @@ func (n *Node) FirstChildren(name string) *Node {
 	}
 
 	return nil
+}
+
+func (n *Node) String() string {
+	r := "<" + n.Name.Local + " xmlns=\"" + n.Name.Space + "\">\n"
+
+	for _, v := range n.Children {
+		r += v.String() + "\n"
+	}
+
+	r += "<\\" + n.Name.Local + ">"
+
+	return r
 }

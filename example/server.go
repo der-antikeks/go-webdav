@@ -20,8 +20,9 @@ func main() {
 	// of stripped component, but needs for COPY/MOVE methods.
 	// Destination path is supplied as header and needs to be stripped.
 	http.Handle("/webdav/", &webdav.Server{
-		TrimPrefix: "/webdav/",
 		Fs:         webdav.Dir(path),
+		TrimPrefix: "/webdav/",
+		Listings:   true,
 	})
 
 	http.HandleFunc("/", index)

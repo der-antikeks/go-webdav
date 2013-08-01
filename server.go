@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -184,12 +187,6 @@ func (s *Server) doPropfind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	/*
-		TODO:
-			return only directory and ics-file
-			of current user
-	*/
-
 	depth := r.Header.Get("Depth")
 	switch depth {
 	case "0", "1":
@@ -200,7 +197,6 @@ func (s *Server) doPropfind(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(StatusForbidden)
 		return
 	default:
-		log.Println("DAV:", "invalid depth header", depth)
 		w.WriteHeader(StatusBadRequest)
 		return
 	}
@@ -212,7 +208,11 @@ func (s *Server) doPropfind(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 0 {
 		propfind, err := NodeFromXml(r.Body)
 		if err != nil {
-			log.Println("DAV:", "invalid propfind xml", err)
+			w.WriteHeader(StatusBadRequest)
+			return
+		}
+
+		if propfind.Name.Local != "propfind" {
 			w.WriteHeader(StatusBadRequest)
 			return
 		}
@@ -220,7 +220,8 @@ func (s *Server) doPropfind(w http.ResponseWriter, r *http.Request) {
 		// find by property
 		// http://www.webdav.org/specs/rfc4918.html#dav.properties
 		if propfind.HasChildren("prop") {
-			for _, p := range propfind.GetChildrens("prop") {
+			prop := propfind.FirstChildren("prop")
+			for _, p := range prop.GetChildrens("*") {
 				properties = append(properties, p.Name.Local)
 			}
 		}
@@ -232,6 +233,14 @@ func (s *Server) doPropfind(w http.ResponseWriter, r *http.Request) {
 
 		// find all properties
 		if propfind.HasChildren("allprop") {
+			properties = []string{
+				"creationdate", "displayname",
+				"getcontentlanguage", "getcontentlength",
+				"getcontenttype", "getetag",
+				"getlastmodified", "lockdiscovery",
+				"resourcetype", "supportedlock",
+			}
+
 			if propfind.HasChildren("include") {
 				for _, i := range propfind.GetChildrens("include") {
 					includes = append(includes, i.Name.Local)
@@ -242,29 +251,161 @@ func (s *Server) doPropfind(w http.ResponseWriter, r *http.Request) {
 
 	path := s.url2path(r.URL)
 	if !s.pathExists(path) {
-		w.WriteHeader(StatusNotFound)
+		http.Error(w, path, StatusNotFound)
+		// TODO: if locked (parent locked?) return multistatus with locked error as propstat
 		return
 	}
 
 	paths := []string{path}
 	if depth == "1" {
 		// fetch all files if directory
-		// respect []includes
+		// TODO: respect []includes
+
+		if s.pathIsDirectory(path) {
+			for _, p := range s.directoryContents(path) {
+				paths = append(paths, path+"/"+p)
+			}
+		}
 	}
 
-	log.Println("propnames", propnames)
+	buf := new(bytes.Buffer)
+	buf.WriteString(`<?xml version="1.0" encoding="utf-8"?>`)
+	buf.WriteString(`<multistatus xmlns='DAV:'>`)
 
-	w.WriteHeader(StatusMulti)
-	w.Header().Set("Content-Type", "application/xml; charset=UTF-8")
+	// TODO: https?
+	abs := "http://" + r.Host + s.TrimPrefix
+
 	for _, p := range paths {
+		// TODO
 		// test locks/ authorization
 		// if properties, show only given properties, else all
 		// if propnames, return names of properties, else names and values
-		log.Println(p)
+
+		propertiesNotFound := []string{}
+
+		f, _ := s.Fs.Open(p)
+		defer f.Close()
+		fi, _ := f.Stat()
+
+		buf.WriteString(`<response>`)
+		buf.WriteString(`<href>` + abs + p + `</href>`)
+		buf.WriteString(`<propstat>`)
+		{
+			buf.WriteString(`<prop>`)
+			{
+				//  TODO: make less ugly
+				for _, prop := range properties {
+
+					switch prop {
+					case "creationdate":
+						if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(fi.ModTime().Format("2006-01-02T15:04:05Z07:00"))
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "getcontentlanguage":
+						if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(`en`)
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "getcontentlength":
+						if fi.IsDir() {
+						} else if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(strconv.FormatInt(int64(fi.Size()), 10))
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "getcontenttype":
+						if fi.IsDir() {
+						} else if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(mime.TypeByExtension(filepath.Ext(fi.Name())))
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "getlastmodified":
+						if fi.IsDir() {
+						} else if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(fi.ModTime().Format("Mon, 02 Jan 2006 15:04:05 MST"))
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "resourcetype":
+						if propnames || !fi.IsDir() {
+							// ZODO: reson for all the ugliness
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(`<collection/>`)
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "displayname":
+						if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(fi.Name())
+							buf.WriteString(`</` + prop + `>`)
+						}
+					case "supportedlock":
+						if propnames {
+							buf.WriteString(`<` + prop + `/>`)
+						} else {
+							buf.WriteString(`<` + prop + `>`)
+							buf.WriteString(`<lockentry><lockscope><exclusive/></lockscope><locktype><write/></locktype></lockentry>`)
+							buf.WriteString(`<lockentry><lockscope><shared/></lockscope><locktype><write/></locktype></lockentry>`)
+							buf.WriteString(`</` + prop + `>`)
+						}
+
+						// TODO: implement later at locks-stage
+						// case "getetag": // not for dir
+						// case "lockdiscovery":
+					default:
+						propertiesNotFound = append(propertiesNotFound, prop)
+					}
+				}
+			}
+			buf.WriteString(`</prop>`)
+			buf.WriteString(`<status>HTTP/1.1 200 OK</status>`)
+		}
+		buf.WriteString(`</propstat>`)
+
+		if len(propertiesNotFound) > 0 {
+			buf.WriteString(`<propstat>`)
+			{
+				buf.WriteString(`<prop>`)
+				{
+					for _, prop := range propertiesNotFound {
+						buf.WriteString(`<` + prop + `/>`)
+					}
+				}
+				buf.WriteString(`</prop>`)
+				buf.WriteString(`<status>HTTP/1.1 404 ` + StatusText(404) + `</status>`)
+			}
+			buf.WriteString(`</propstat>`)
+		}
+
+		buf.WriteString(`</response>`)
 	}
 
-	// TODO: propfind
-	w.WriteHeader(StatusNotImplemented)
+	buf.WriteString(`</multistatus>`)
+
+	w.WriteHeader(StatusMulti)
+	w.Header().Set("Content-Length", string(buf.Len()))
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+
+	buf.WriteTo(w)
+	// TODO: possible write error is suppressed
 }
 
 // http://www.webdav.org/specs/rfc4918.html#METHOD_PROPPATCH

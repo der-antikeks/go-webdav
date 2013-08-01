@@ -61,4 +61,5 @@ func StatusText(code int) string {
 var (
 	ErrInvalidCharPath = errors.New("invalid character in file path")
 	ErrNotImplemented  = errors.New("feature not yet implemented")
+	ErrMalformedXml    = errors.New("xml is not well-formed")
 )
