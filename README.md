@@ -2,30 +2,20 @@
 
 __TODO (litmus tests):__
 * basic..... pass
-	* options............... pass
-	* put_get............... pass
-	* put_get_utf8_segment.. pass
-	* put_no_parent......... pass
-	* mkcol_over_plain...... pass
-	* delete................ pass
-	* delete_null........... pass
-	* delete_fragment....... pass
-	* mkcol................. pass
-	* mkcol_again........... pass
-	* delete_coll........... pass
-	* mkcol_no_parent....... pass
-	* mkcol_with_body....... pass
-* copymove.. FAIL
+* copymove.. pass
+	* init.................. pass
+	* begin................. pass
 	* copy_init............. pass
 	* copy_simple........... pass
-	* copy_overwrite........ FAIL
-	* copy_nodestcoll....... WARNING
+	* copy_overwrite........ pass
+	* copy_nodestcoll....... pass
 	* copy_cleanup.......... pass
-	* copy_coll............. FAIL
-	* copy_shallow.......... FAIL
-	* move.................. FAIL
-	* move_coll............. FAIL
+	* copy_coll............. pass
+	* copy_shallow.......... pass
+	* move.................. pass
+	* move_coll............. pass
 	* move_cleanup.......... pass
+	* finish................ pass
 * props..... SKIPPED
 * locks..... SKIPPED
 * http...... SKIPPED

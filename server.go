@@ -353,6 +353,7 @@ func (s *Server) serveResource(w http.ResponseWriter, r *http.Request, serveCont
 	fi, err := f.Stat()
 	if err != nil {
 		http.Error(w, r.RequestURI, StatusNotFound)
+		return
 	}
 	modTime := fi.ModTime()
 
@@ -549,7 +550,6 @@ func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
 	// TODO: normalize dest?
 	dest = s.url2path(d)
 	source := s.url2path(r.URL)
-	log.Println("DAV:", "copy", dest, source)
 
 	// source equals destination
 	if source == dest {
@@ -557,7 +557,7 @@ func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	// quick'n'dirty destination must be same server/namespace as source
+	// destination must be same server/namespace as source
 	if d.Host != r.Host ||
 		!strings.HasPrefix(d.Path, s.TrimPrefix) ||
 		!strings.HasPrefix(r.URL.Path, s.TrimPrefix) {
@@ -566,20 +566,25 @@ func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
+	// TODO: needs to be tested? should be catched with error at CopyFile returning StatusConflict
+	// currently only at depth=0 or non-collection copy
+	/*
+		parentDest := dest[:strings.LastIndex(dest, "/")]
+		if !s.pathExists(parentDest) {
+			w.WriteHeader(StatusConflict)
+			return false
+		}
+	*/
+
 	overwrite := r.Header.Get("Overwrite") != "F"
 	exists := s.pathExists(dest)
 
-	log.Println("DAV:", "overwrite", r.Header.Get("Overwrite"), overwrite)
-
 	if overwrite {
 		if exists {
-			if !s.deleteResource(dest, w, r, true) {
-				// TODO: http status code?
-
-				log.Println("DAV:", "overwrite existing", "failed")
+			if !s.deleteResource(dest, w, r, false) {
+				w.WriteHeader(StatusInternalServerError)
 				return false
 			}
-			log.Println("DAV:", "overwrite existing", "success")
 		}
 	} else {
 		if exists {
@@ -588,20 +593,29 @@ func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 
-	// TODO: copy resource
-	if !s.pathIsDirectory(source) || r.Header.Get("Depth") == "0" {
+	if !s.pathIsDirectory(source) {
 		if err := s.CopyFile(source, dest); err != nil {
-			w.WriteHeader(StatusInternalServerError)
+			// TODO: always conflict? e.g. copy to non-existant path
+			//w.WriteHeader(StatusInternalServerError)
+			w.WriteHeader(StatusConflict)
+			return false
+		}
+	} else if r.Header.Get("Depth") == "0" {
+		// copy only collection, not its internal members
+		// http://www.webdav.org/specs/rfc4918.html#copy.for.collections
+		if err := s.Fs.Mkdir(dest); err != nil {
+			w.WriteHeader(StatusConflict)
 			return false
 		}
 	} else {
 		// http://www.webdav.org/specs/rfc4918.html#copy.for.collections
 		errors := map[string]int{}
-		s.copyCollection(source, dest, w, r, errors)
 
-		if err := s.CopyFile(source, dest); err != nil {
+		if err := s.Fs.Mkdir(dest); err != nil {
 			errors[source] = StatusInternalServerError
 		}
+
+		s.copyCollection(source, dest, w, r, errors)
 
 		if len(errors) != 0 {
 			// send multistatus
@@ -632,7 +646,6 @@ func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
 	// copy was successful
 	if exists {
 		w.WriteHeader(StatusNoContent)
-
 	} else {
 		w.WriteHeader(StatusCreated)
 	}
@@ -642,19 +655,26 @@ func (s *Server) copyResource(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) CopyFile(source, dest string) error {
+	// open source file
 	fs, err := s.Fs.Open(source)
 	if err != nil {
 		return err
 	}
+	defer fs.Close()
 
+	// open destination file
 	fd, err := s.Fs.Create(dest)
 	if err != nil {
 		return err
 	}
+	defer fd.Close()
 
+	// copy file contents
 	if _, err := io.Copy(fd, fs); err != nil {
 		return err
 	}
+
+	// TODO: copy file stats? http://www.webdav.org/specs/rfc4918.html#copy.for.properties
 
 	return nil
 }
@@ -671,11 +691,15 @@ func (s *Server) copyCollection(source, dest string, w http.ResponseWriter, r *h
 			errors[ssub] = StatusLocked
 		} else {
 			if s.pathIsDirectory(ssub) {
-				s.copyCollection(ssub, dsub, w, r, errors)
-			}
+				if err := s.Fs.Mkdir(dsub); err != nil {
+					errors[ssub] = StatusInternalServerError
+				}
 
-			if err := s.CopyFile(ssub, dsub); err != nil {
-				errors[ssub] = StatusInternalServerError
+				s.copyCollection(ssub, dsub, w, r, errors)
+			} else {
+				if err := s.CopyFile(ssub, dsub); err != nil {
+					errors[ssub] = StatusInternalServerError
+				}
 			}
 		}
 	}
